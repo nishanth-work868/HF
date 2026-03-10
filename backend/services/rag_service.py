@@ -22,7 +22,7 @@ logger = logging.getLogger("rag_service")
 
 
 
-hf_client = InferenceClient(token=HF_TOKEN)
+hf_client = InferenceClient(token=HF_TOKEN, provider="hf-inference")
 
 
 
