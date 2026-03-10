@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import faiss
+import requests
 import fitz  # PyMuPDF — for PDF text extraction
 from docx import Document as DocxDocument  # python-docx — for DOCX text extraction
 from huggingface_hub import InferenceClient
@@ -22,8 +23,16 @@ logger = logging.getLogger("rag_service")
 
 
 
+# Chat-completion client (router handles this correctly)
 hf_client = InferenceClient(token=HF_TOKEN, provider="hf-inference")
 
+# Direct router URL for embeddings — bypasses huggingface_hub routing which
+# still hits the deprecated api-inference.huggingface.co endpoint (410 Gone).
+_ROUTER_EMBED_URL = (
+    "https://router.huggingface.co/hf-inference/models/"
+    f"{EMBED_MODEL}/pipeline/feature-extraction"
+)
+_ROUTER_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 
 FAISS_DIM = 384  # must match embedding model output (all-MiniLM-L6-v2 = 384)
@@ -133,18 +142,23 @@ def init_db():
 
 init_db()
 
-MAX_EMBED_CHARS = 2000  # ~500 tokens, safe for qwen3-embedding:0.6b context window
+MAX_EMBED_CHARS = 2000  # ~500 tokens, safe for all-MiniLM-L6-v2 context window
 
 def get_embedding(text: str):
 
     if len(text) > MAX_EMBED_CHARS:
         text = text[:MAX_EMBED_CHARS]
 
-    # feature_extraction returns a numpy array; shape varies by model:
-    #   (hidden_dim,)          — pooled single string
-    #   (seq_len, hidden_dim)  — token-level single string (mean-pool needed)
-    embedding = hf_client.feature_extraction(text, model=EMBED_MODEL)
-    arr = np.array(embedding)
+    # Call router.huggingface.co directly — bypasses the deprecated
+    # api-inference.huggingface.co endpoint that huggingface_hub still hits.
+    resp = requests.post(
+        _ROUTER_EMBED_URL,
+        headers=_ROUTER_HEADERS,
+        json={"inputs": text},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    arr = np.array(resp.json())
     if arr.ndim == 2:
         arr = arr.mean(axis=0)  # mean-pool token dim → (hidden_dim,)
     return arr.tolist()
@@ -167,11 +181,18 @@ def add_documents(chunks: List[str], metadata: List[dict]):
     for batch_num, i in enumerate(range(0, len(truncated), BATCH_SIZE), 1):
         batch = truncated[i:i + BATCH_SIZE]
         batch_start = time.time()
-        response = hf_client.feature_extraction(batch, model=EMBED_MODEL)
-        # HF returns a numpy array; shape can be:
+        # Direct router call — bypasses deprecated api-inference.huggingface.co
+        resp = requests.post(
+            _ROUTER_EMBED_URL,
+            headers=_ROUTER_HEADERS,
+            json={"inputs": batch},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        # Router returns JSON; shape can be:
         #   (batch, hidden_dim)          — already pooled
         #   (batch, seq_len, hidden_dim) — token-level, needs mean-pool
-        arr = np.array(response)
+        arr = np.array(resp.json())
         if arr.ndim == 3:
             arr = arr.mean(axis=1)  # (batch, seq_len, dim) → (batch, dim)
         all_embeddings.extend(arr.tolist())
