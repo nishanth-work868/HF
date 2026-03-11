@@ -9,18 +9,16 @@ API_PREFIX = "/api"
 # Models
 EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# Strip legacy ":provider" suffix (e.g. "model:hf-inference") — newer huggingface_hub
-# rejects colons in repo IDs; the provider is passed separately instead.
-_raw_chat_model = os.getenv("CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:hf-inference")
+# CHAT_MODEL env var: "model-id:provider" (e.g. "meta-llama/Llama-3.1-8B-Instruct:novita")
+# The provider suffix is passed to the HF router as part of the model name.
+_raw_chat_model = os.getenv("CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
 if ":" in _raw_chat_model.split("/")[-1]:
     _model_part, _provider_part = _raw_chat_model.rsplit(":", 1)
 else:
-    _model_part, _provider_part = _raw_chat_model, "hf-inference"
+    _model_part, _provider_part = _raw_chat_model, "novita"
 
 CHAT_MODEL_DEFAULT = _model_part
-_SUPPORTED_PROVIDERS = {"fal-ai", "hf-inference", "replicate", "sambanova", "together"}
-_configured_provider = os.getenv("CHAT_PROVIDER", _provider_part)
-CHAT_PROVIDER = _configured_provider if _configured_provider in _SUPPORTED_PROVIDERS else "hf-inference"
+CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", _provider_part)
 
 # HuggingFace Inference API
 HF_TOKEN = os.getenv("HF_TOKEN", "")
