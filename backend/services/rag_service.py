@@ -13,7 +13,6 @@ import faiss
 import requests
 import fitz  # PyMuPDF — for PDF text extraction
 from docx import Document as DocxDocument  # python-docx — for DOCX text extraction
-from huggingface_hub import InferenceClient
 
 from config import EMBED_MODEL, CHAT_MODEL_DEFAULT, CHAT_PROVIDER, FAISS_INDEX_PATH, FAISS_META_PATH, HF_TOKEN, CONVERSATION_RETENTION_DAYS, RAG_TOP_K
 from models.schemas import QueryRequest, ConversationResponse
@@ -22,15 +21,14 @@ logger = logging.getLogger("rag_service")
 
 
 
-# Chat-completion client — provider routes the request to the correct backend
-hf_client = InferenceClient(token=HF_TOKEN, provider=CHAT_PROVIDER)
-
-# Direct router URL for embeddings — bypasses huggingface_hub routing which
-# still hits the deprecated api-inference.huggingface.co endpoint (410 Gone).
+# Direct router URLs — all inference goes through router.huggingface.co
+# (api-inference.huggingface.co returned 410 Gone in newer HF hub versions)
+_ROUTER_BASE = "https://router.huggingface.co"
 _ROUTER_EMBED_URL = (
-    "https://router.huggingface.co/hf-inference/models/"
+    f"{_ROUTER_BASE}/hf-inference/models/"
     f"{EMBED_MODEL}/pipeline/feature-extraction"
 )
+_ROUTER_CHAT_URL = f"{_ROUTER_BASE}/{CHAT_PROVIDER}/v1/chat/completions"
 _ROUTER_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 
@@ -287,15 +285,21 @@ def handle_query(request: QueryRequest):
     messages = [{"role": "system", "content": system_prompt}]
     messages.append({"role": "user", "content": request.query})
 
-    # LLM call via HuggingFace Inference API (OpenAI-compatible chat_completion)
-    response = hf_client.chat_completion(
-        model=CHAT_MODEL_DEFAULT,
-        messages=messages,
-        temperature=0.3,
-        max_tokens=4096,
+    # LLM call via HuggingFace Router (OpenAI-compatible chat completions)
+    chat_resp = requests.post(
+        _ROUTER_CHAT_URL,
+        headers={**_ROUTER_HEADERS, "Content-Type": "application/json"},
+        json={
+            "model": CHAT_MODEL_DEFAULT,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 4096,
+        },
+        timeout=120,
     )
+    chat_resp.raise_for_status()
 
-    answer = response.choices[0].message.content
+    answer = chat_resp.json()["choices"][0]["message"]["content"]
 
     return ConversationResponse(
         conversation_id=conversation_id,
@@ -436,4 +440,4 @@ def split_text(text, chunk_size=800, overlap=100):
     logger.info(f"Split text into {len(chunks)} chunks ({len(words)} words, "
                 f"chunk_size={chunk_size}, overlap={overlap})")
     return chunks
-
+
