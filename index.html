@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -578,7 +578,7 @@
                     <label class="select-label">
                         Model:
                         <select id="modelSelect">
-                            <option value="meta-llama/Llama-3.1-8B-Instruct:novita" selected>Llama 3.1 8B Instruct
+                            <option value="meta-llama/Llama-3.1-8B-Instruct:hf-inference" selected>Llama 3.1 8B Instruct
                             </option>
                             <option value="mistralai/Mistral-7B-Instruct-v0.3">Mistral 7B Instruct</option>
                             <option value="HuggingFaceH4/zephyr-7b-beta">Zephyr 7B Beta</option>
@@ -664,57 +664,10 @@
                 throw error;
             }
         }
-        // Initialize the page and fetch conversations
+        // Initialize the page
         document.addEventListener('DOMContentLoaded', () => {
             console.log('Using API URL:', API_URL);
-            fetchConversations();
         });
-        // Fetch all conversations
-        async function fetchConversations() {
-            try {
-                const response = await apiFetch('/conversations');
-                conversations = await response.json();
-                renderConversations();
-            } catch (error) {
-                console.error('Error fetching conversations:', error);
-            }
-        }
-        // Render conversations list
-        function renderConversations() {
-            const list = document.getElementById('conversationsList');
-            list.innerHTML = '';
-
-            conversations.forEach(conv => {
-                const item = document.createElement('div');
-                item.className = `conversation-item ${currentConversation === conv.conversation_id ? 'active' : ''}`;
-                item.onclick = () => loadConversation(conv.conversation_id);
-
-                item.innerHTML = `
-                    <div class="conversation-title">${conv.title}</div>
-                    <div class="conversation-date">
-                        ${new Date(conv.updated_at).toLocaleDateString()}
-                    </div>
-                    <button class="delete-btn" onclick="deleteConversation('${conv.conversation_id}', event)">
-                        &#128465;&#65039;
-                    </button>
-                `;
-
-                list.appendChild(item);
-            });
-        }
-        // Load a conversation
-        async function loadConversation(conversationId) {
-            try {
-                const response = await apiFetch(`/conversations/${conversationId}`);
-                const data = await response.json();
-                currentConversation = conversationId;
-                messages = data.messages;
-                renderMessages();
-                updateChatTitle();
-            } catch (error) {
-                console.error('Error loading conversation:', error);
-            }
-        }
 
         // Start new conversation
         function startNewConversation() {
@@ -722,7 +675,6 @@
             messages = [];
             renderMessages();
             updateChatTitle();
-            renderConversations();
         }
 
         // Update chat title
@@ -858,7 +810,6 @@
                 if (!currentConversation) {
                     currentConversation = data.conversation_id;
                     updateChatTitle();
-                    fetchConversations();
                 }
 
                 // Remove typing indicator
@@ -1003,24 +954,7 @@
             return { status: 'failed', error: 'Timed out waiting for processing' };
         }
 
-        // Delete conversation
-        async function deleteConversation(conversationId, event) {
-            event.stopPropagation();
 
-            try {
-                await apiFetch(`/conversations/${conversationId}`, {
-                    method: 'DELETE',
-                });
-
-                fetchConversations();
-
-                if (currentConversation === conversationId) {
-                    startNewConversation();
-                }
-            } catch (error) {
-                console.error('Error deleting conversation:', error);
-            }
-        }
         // Enable enter to send
         document.getElementById('messageInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
