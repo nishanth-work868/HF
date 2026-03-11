@@ -13,6 +13,7 @@ import faiss
 import requests
 import fitz  # PyMuPDF — for PDF text extraction
 from docx import Document as DocxDocument  # python-docx — for DOCX text extraction
+from openai import OpenAI
 
 from config import EMBED_MODEL, CHAT_MODEL_DEFAULT, CHAT_PROVIDER, FAISS_INDEX_PATH, FAISS_META_PATH, HF_TOKEN, CONVERSATION_RETENTION_DAYS, RAG_TOP_K
 from models.schemas import QueryRequest, ConversationResponse
@@ -28,9 +29,15 @@ _ROUTER_EMBED_URL = (
     f"{_ROUTER_BASE}/hf-inference/models/"
     f"{EMBED_MODEL}/pipeline/feature-extraction"
 )
-_ROUTER_CHAT_URL = f"{_ROUTER_BASE}/v1/chat/completions"
-_ROUTER_CHAT_MODEL = f"{CHAT_MODEL_DEFAULT}:{CHAT_PROVIDER}"
 _ROUTER_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+# OpenAI-compatible client pointing at the HF router
+_openai_client = OpenAI(
+    base_url=f"{_ROUTER_BASE}/v1",
+    api_key=HF_TOKEN,
+)
+# Model name with provider suffix as required by HF router
+_ROUTER_CHAT_MODEL = f"{CHAT_MODEL_DEFAULT}:{CHAT_PROVIDER}"
 
 
 FAISS_DIM = 384  # must match embedding model output (all-MiniLM-L6-v2 = 384)
@@ -286,21 +293,15 @@ def handle_query(request: QueryRequest):
     messages = [{"role": "system", "content": system_prompt}]
     messages.append({"role": "user", "content": request.query})
 
-    # LLM call via HuggingFace Router (OpenAI-compatible chat completions)
-    chat_resp = requests.post(
-        _ROUTER_CHAT_URL,
-        headers={**_ROUTER_HEADERS, "Content-Type": "application/json"},
-        json={
-            "model": _ROUTER_CHAT_MODEL,
-            "messages": messages,
-            "temperature": 0.3,
-            "max_tokens": 4096,
-        },
-        timeout=120,
+    # LLM call via HuggingFace Router using OpenAI-compatible client
+    completion = _openai_client.chat.completions.create(
+        model=_ROUTER_CHAT_MODEL,
+        messages=messages,
+        temperature=0.3,
+        max_tokens=4096,
     )
-    chat_resp.raise_for_status()
 
-    answer = chat_resp.json()["choices"][0]["message"]["content"]
+    answer = completion.choices[0].message.content
 
     return ConversationResponse(
         conversation_id=conversation_id,
