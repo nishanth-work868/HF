@@ -8,8 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from config import APP_NAME, API_PREFIX, ALLOWED_ORIGINS
 
-from routers import query, upload, conversations
-from services.rag_service import purge_old_conversations
+from routers import query, upload
 
 # Ensure logs directory exists before creating FileHandler
 Path("logs").mkdir(parents=True, exist_ok=True)
@@ -26,19 +25,8 @@ logging.basicConfig(
 _cleanup_logger = logging.getLogger("cleanup")
 
 
-async def _daily_cleanup():
-    """Run purge_old_conversations once at startup, then every 24 hours."""
-    while True:
-        try:
-            purge_old_conversations()
-        except Exception as e:
-            _cleanup_logger.error(f"Auto-purge failed: {e}")
-        await asyncio.sleep(24 * 60 * 60)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(_daily_cleanup())
     yield
 
 
@@ -60,7 +48,6 @@ app.add_middleware(
 
 app.include_router(query.router, prefix=API_PREFIX, tags=["RAG"])
 app.include_router(upload.router, prefix=API_PREFIX, tags=["Upload"])
-app.include_router(conversations.router, prefix=API_PREFIX, tags=["Conversations"])
 
 
 @app.get("/api/health")

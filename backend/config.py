@@ -8,7 +8,17 @@ API_PREFIX = "/api"
 
 # Models
 EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-CHAT_MODEL_DEFAULT = os.getenv("CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
+
+# Strip legacy ":provider" suffix (e.g. "model:novita") — newer huggingface_hub
+# rejects colons in repo IDs; the provider is passed separately instead.
+_raw_chat_model = os.getenv("CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
+if ":" in _raw_chat_model.split("/")[-1]:
+    _model_part, _provider_part = _raw_chat_model.rsplit(":", 1)
+else:
+    _model_part, _provider_part = _raw_chat_model, "novita"
+
+CHAT_MODEL_DEFAULT = _model_part
+CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", _provider_part)
 
 # HuggingFace Inference API
 HF_TOKEN = os.getenv("HF_TOKEN", "")

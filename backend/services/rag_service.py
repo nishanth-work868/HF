@@ -1,6 +1,5 @@
 import uuid
 import json
-import sqlite3
 import io
 import time
 import logging
@@ -16,15 +15,15 @@ import fitz  # PyMuPDF — for PDF text extraction
 from docx import Document as DocxDocument  # python-docx — for DOCX text extraction
 from huggingface_hub import InferenceClient
 
-from config import EMBED_MODEL, CHAT_MODEL_DEFAULT, FAISS_INDEX_PATH, FAISS_META_PATH, HF_TOKEN, CONVERSATION_RETENTION_DAYS, RAG_TOP_K
+from config import EMBED_MODEL, CHAT_MODEL_DEFAULT, CHAT_PROVIDER, FAISS_INDEX_PATH, FAISS_META_PATH, HF_TOKEN, CONVERSATION_RETENTION_DAYS, RAG_TOP_K
 from models.schemas import QueryRequest, ConversationResponse
 
 logger = logging.getLogger("rag_service")
 
 
 
-# Chat-completion client (router handles this correctly)
-hf_client = InferenceClient(token=HF_TOKEN, provider="hf-inference")
+# Chat-completion client — provider routes the request to the correct backend
+hf_client = InferenceClient(token=HF_TOKEN, provider=CHAT_PROVIDER)
 
 # Direct router URL for embeddings — bypasses huggingface_hub routing which
 # still hits the deprecated api-inference.huggingface.co endpoint (410 Gone).
@@ -102,45 +101,6 @@ def _save_index():
 
 
 index = _load_index()
-
-# Resolve DB path relative to the backend directory (parent of services/)
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-DB_FILE = str(_BACKEND_DIR / "chat_history.db")
-
-
-def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    return conn
-
-
-def init_db():
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS conversations(
-        id TEXT PRIMARY KEY,
-        created_at TEXT,
-        updated_at TEXT,
-        title TEXT
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS messages(
-        id TEXT PRIMARY KEY,
-        conversation_id TEXT,
-        role TEXT,
-        content TEXT,
-        timestamp TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
 
 MAX_EMBED_CHARS = 2000  # ~500 tokens, safe for all-MiniLM-L6-v2 context window
 
@@ -255,71 +215,9 @@ def search_documents(query_embedding, top_k=None):
     return results
 
 
-def create_conversation(title="New conversation"):
-
-    cid = str(uuid.uuid4())
-    now = datetime.now().isoformat()
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute(
-        "INSERT INTO conversations VALUES (?,?,?,?)",
-        (cid, now, now, title)
-    )
-
-    conn.commit()
-    conn.close()
-
-    return cid
-
-
-def save_message(conversation_id, role, content):
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute(
-        "INSERT INTO messages VALUES (?,?,?,?,?)",
-        (
-            str(uuid.uuid4()),
-            conversation_id,
-            role,
-            content,
-            datetime.now().isoformat()
-        )
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def get_conversation_history(conversation_id):
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute(
-        "SELECT role,content FROM messages WHERE conversation_id=?",
-        (conversation_id,)
-    )
-
-    rows = c.fetchall()
-
-    conn.close()
-
-    return [{"role": r[0], "content": r[1]} for r in rows]
-
-
-
 def handle_query(request: QueryRequest):
 
-    if request.conversation_id:
-        conversation_id = request.conversation_id
-    else:
-        conversation_id = create_conversation(title=request.query[:50])
-
-    save_message(conversation_id, "user", request.query)
+    conversation_id = request.conversation_id or str(uuid.uuid4())
 
     # Reload index if another worker updated it (multi-worker sync)
     _reload_index_if_changed()
@@ -386,23 +284,18 @@ def handle_query(request: QueryRequest):
             "document-specific questions.\n"
         )
 
-    history = get_conversation_history(conversation_id)
-
     messages = [{"role": "system", "content": system_prompt}]
-
-    messages.extend(history)
+    messages.append({"role": "user", "content": request.query})
 
     # LLM call via HuggingFace Inference API (OpenAI-compatible chat_completion)
     response = hf_client.chat_completion(
         model=CHAT_MODEL_DEFAULT,
         messages=messages,
         temperature=0.3,
-        max_tokens=4096
+        max_tokens=4096,
     )
 
     answer = response.choices[0].message.content
-
-    save_message(conversation_id, "assistant", answer)
 
     return ConversationResponse(
         conversation_id=conversation_id,
@@ -543,97 +436,4 @@ def split_text(text, chunk_size=800, overlap=100):
     logger.info(f"Split text into {len(chunks)} chunks ({len(words)} words, "
                 f"chunk_size={chunk_size}, overlap={overlap})")
     return chunks
-
-def get_conversations():
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT id, created_at, updated_at, title FROM conversations ORDER BY updated_at DESC")
-
-    rows = c.fetchall()
-
-    conn.close()
-
-    return [
-        {
-            "conversation_id": r[0],
-            "created_at": r[1],
-            "updated_at": r[2],
-            "title": r[3] or "New conversation"
-        }
-        for r in rows
-    ]
-
-
-def get_conversation(conversation_id):
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute(
-        "SELECT role,content,timestamp FROM messages WHERE conversation_id=?",
-        (conversation_id,)
-    )
-
-    rows = c.fetchall()
-
-    conn.close()
-
-    return {
-        "conversation_id": conversation_id,
-        "messages": [
-            {
-                "role": r[0],
-                "content": r[1],
-                "timestamp": r[2]
-            }
-            for r in rows
-        ]
-    }
-
-
-def delete_conversation(conversation_id):
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute(
-        "DELETE FROM messages WHERE conversation_id=?",
-        (conversation_id,)
-    )
-
-    c.execute(
-        "DELETE FROM conversations WHERE id=?",
-        (conversation_id,)
-    )
-
-    conn.commit()
-    conn.close()
-
-    return {"status": "deleted"}
-
-
-def purge_old_conversations():
-    """Delete conversations not updated in the last CONVERSATION_RETENTION_DAYS days."""
-    if CONVERSATION_RETENTION_DAYS <= 0:
-        logger.info("Conversation auto-purge is disabled (CONVERSATION_RETENTION_DAYS=0)")
-        return
-
-    cutoff = (datetime.now() - timedelta(days=CONVERSATION_RETENTION_DAYS)).isoformat()
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT id FROM conversations WHERE updated_at < ?", (cutoff,))
-    old_ids = [r[0] for r in c.fetchall()]
-
-    if old_ids:
-        placeholders = ",".join("?" * len(old_ids))
-        c.execute(f"DELETE FROM messages WHERE conversation_id IN ({placeholders})", old_ids)
-        c.execute(f"DELETE FROM conversations WHERE id IN ({placeholders})", old_ids)
-        conn.commit()
-        logger.info(f"Auto-purged {len(old_ids)} conversations older than {CONVERSATION_RETENTION_DAYS} days")
-    else:
-        logger.info("Auto-purge: no old conversations found")
-
-    conn.close()
+
