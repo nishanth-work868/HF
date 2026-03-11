@@ -28,7 +28,7 @@ _ROUTER_EMBED_URL = (
     f"{_ROUTER_BASE}/hf-inference/models/"
     f"{EMBED_MODEL}/pipeline/feature-extraction"
 )
-_ROUTER_CHAT_URL = f"{_ROUTER_BASE}/{CHAT_PROVIDER}/models/{CHAT_MODEL_DEFAULT}/v1/chat/completions"
+_ROUTER_CHAT_URL = f"{_ROUTER_BASE}/models/{CHAT_MODEL_DEFAULT}/v1/chat/completions"
 _ROUTER_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 
