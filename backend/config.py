@@ -18,7 +18,9 @@ else:
     _model_part, _provider_part = _raw_chat_model, "hf-inference"
 
 CHAT_MODEL_DEFAULT = _model_part
-CHAT_PROVIDER = os.getenv("CHAT_PROVIDER", _provider_part)
+_SUPPORTED_PROVIDERS = {"fal-ai", "hf-inference", "replicate", "sambanova", "together"}
+_configured_provider = os.getenv("CHAT_PROVIDER", _provider_part)
+CHAT_PROVIDER = _configured_provider if _configured_provider in _SUPPORTED_PROVIDERS else "hf-inference"
 
 # HuggingFace Inference API
 HF_TOKEN = os.getenv("HF_TOKEN", "")
