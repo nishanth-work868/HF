@@ -28,7 +28,8 @@ _ROUTER_EMBED_URL = (
     f"{_ROUTER_BASE}/hf-inference/models/"
     f"{EMBED_MODEL}/pipeline/feature-extraction"
 )
-_ROUTER_CHAT_URL = f"{_ROUTER_BASE}/models/{CHAT_MODEL_DEFAULT}/v1/chat/completions"
+_ROUTER_CHAT_URL = f"{_ROUTER_BASE}/v1/chat/completions"
+_ROUTER_CHAT_MODEL = f"{CHAT_MODEL_DEFAULT}:{CHAT_PROVIDER}"
 _ROUTER_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 
@@ -290,7 +291,7 @@ def handle_query(request: QueryRequest):
         _ROUTER_CHAT_URL,
         headers={**_ROUTER_HEADERS, "Content-Type": "application/json"},
         json={
-            "model": CHAT_MODEL_DEFAULT,
+            "model": _ROUTER_CHAT_MODEL,
             "messages": messages,
             "temperature": 0.3,
             "max_tokens": 4096,
