@@ -5,5 +5,5 @@ from services.rag_service import handle_query
 router = APIRouter()
 
 @router.post("/query", response_model=ConversationResponse)
-def query_rag(request: QueryRequest):
-    return handle_query(request)
+async def query_rag(request: QueryRequest):
+    return await handle_query(request)

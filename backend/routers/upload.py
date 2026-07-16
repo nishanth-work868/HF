@@ -20,8 +20,15 @@ def upload(file: UploadFile = File(...)):
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB."
         )
-        
-    return upload_document(file)
+
+    try:
+        return upload_document(file)
+    except ValueError as exc:
+        logger.warning("Upload rejected for %s: %s", file.filename, exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc)
+        ) from exc
 
 @router.delete("/clear-index")
 def clear():

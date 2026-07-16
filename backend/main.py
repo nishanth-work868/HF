@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -12,6 +12,8 @@ from routers import query, upload
 
 # Ensure logs directory exists before creating FileHandler
 Path("logs").mkdir(parents=True, exist_ok=True)
+
+router = APIRouter(prefix="/api")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +32,11 @@ async def lifespan(app: FastAPI):
     yield
 
 
+@router.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 app = FastAPI(
     title=APP_NAME,
     version="1.0.0",
@@ -46,16 +53,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(router)
 app.include_router(query.router, prefix=API_PREFIX, tags=["RAG"])
 app.include_router(upload.router, prefix=API_PREFIX, tags=["Upload"])
 
-
-@app.get("/api/health")
-def health():
-    return {
-        "status": "healthy",
-        "service": "rag-api"
-    }
 
 @app.get("/", response_class=HTMLResponse)
 def serve_frontend():
