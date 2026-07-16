@@ -29,38 +29,56 @@
 
         /* Sidebar */
         .sidebar {
-            width: 280px;
-            background-color: #202123;
-            color: white;
-            display: flex;
-            flex-direction: column;
-            border-right: 1px solid #3e3f4b;
+            display: none;
         }
 
         .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid #3e3f4b;
+            padding: 24px 20px;
+            background: linear-gradient(135deg, #0f766e 0%, #115e59 100%);
+            border-bottom: 1px solid #0d3330;
         }
 
         .sidebar-header h2 {
-            margin-bottom: 15px;
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            color: #f0f9ff;
+        }
+
+        .sidebar-header .logo-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            background-color: rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            margin-right: 12px;
             font-size: 20px;
         }
 
         .new-chat-btn {
             width: 100%;
-            padding: 12px;
-            background-color: transparent;
-            color: white;
-            border: 1px solid #565869;
-            border-radius: 6px;
+            padding: 12px 16px;
+            background-color: #f0f9ff;
+            color: #0f766e;
+            border: none;
+            border-radius: 8px;
             cursor: pointer;
             font-size: 14px;
+            font-weight: 600;
             transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
 
         .new-chat-btn:hover {
-            background-color: #2a2b32;
+            background-color: #e0f2fe;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
         }
 
         .conversations-list {
@@ -119,10 +137,32 @@
         }
 
         .sidebar-footer {
-            padding: 20px;
+            padding: 24px 20px;
             border-top: 1px solid #3e3f4b;
+            margin-top: auto;
+            background-color: #1a1a1f;
         }
 
+        .sidebar-footer-content {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .sidebar-info {
+            font-size: 13px;
+            color: #8e8ea0;
+            line-height: 1.5;
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        .sidebar-info::before {
+            content: '✨';
+            flex-shrink: 0;
+            font-size: 14px;
+        }
 
         .settings {
             display: flex;
@@ -173,11 +213,77 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            position: relative;
         }
 
         .chat-header h3 {
             color: white;
             font-size: 18px;
+            margin-left: 50px;
+        }
+
+        .menu-button {
+            position: absolute;
+            left: 20px;
+            padding: 10px 12px;
+            background-color: #565869;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 18px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+        }
+
+        .menu-button:hover {
+            background-color: #6e6f7b;
+        }
+
+        .dropdown-menu {
+            position: absolute;
+            top: 60px;
+            left: 20px;
+            background-color: #2a2b32;
+            border: 1px solid #565869;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            min-width: 200px;
+            z-index: 1000;
+            overflow: hidden;
+            display: none;
+        }
+
+        .dropdown-menu.open {
+            display: block;
+        }
+
+        .dropdown-item {
+            padding: 12px 16px;
+            color: white;
+            border: none;
+            background: none;
+            cursor: pointer;
+            width: 100%;
+            text-align: left;
+            font-size: 14px;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .dropdown-item:hover {
+            background-color: #3e3f4b;
+        }
+
+        .dropdown-item::before {
+            content: '✎';
+            font-size: 16px;
         }
 
         .upload-section {
@@ -560,37 +666,32 @@
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <h2>Nexus AI</h2>
+                <h2><span class="logo-icon">🤖</span>Nexus AI</h2>
                 <button onclick="startNewConversation()" class="new-chat-btn">
-                    + New Chat
+                    ✎ New Chat
                 </button>
             </div>
             <div class="conversations-list" id="conversationsList" style="display:none">
                 <!-- Conversations hidden from UI -->
             </div>
             <div class="sidebar-footer">
-                <div class="settings">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="useRag" checked>
-                        Use RAG
-                    </label>
-
-                    <label class="select-label">
-                        Model:
-                        <select id="modelSelect">
-                            <option value="meta-llama/Llama-3.1-8B-Instruct:hf-inference" selected>Llama 3.1 8B Instruct
-                            </option>
-                            <option value="mistralai/Mistral-7B-Instruct-v0.3">Mistral 7B Instruct</option>
-                            <option value="HuggingFaceH4/zephyr-7b-beta">Zephyr 7B Beta</option>
-                        </select>
-                    </label>
+                <div class="sidebar-footer-content">
+                    <div class="sidebar-info">
+                        Advanced RAG-powered AI assistant with document intelligence
+                    </div>
                 </div>
             </div>
         </div>
         <!-- Main Chat Area -->
         <div class="main-content">
             <div class="chat-header">
-                <h3 id="chatTitle">Start a New Conversation</h3>
+                <button class="menu-button" onclick="toggleMenu()">☰</button>
+                <div class="dropdown-menu" id="dropdownMenu">
+                    <button class="dropdown-item" onclick="startNewConversation(); toggleMenu()">
+                        New Chat
+                    </button>
+                </div>
+                <h3 id="chatTitle">Nexus AI</h3>
                 <div class="upload-section">
                     <label class="upload-btn">
                         &#128206; Upload Document
@@ -658,12 +759,27 @@
                 }
                 return response;
             } catch (error) {
-                if (error instanceof TypeError && error.message === 'Failed to fetch') {
+                if (error instanceof TypeError) {
                     throw new Error(`Cannot connect to API (${API_URL}). Start backend with: uvicorn main:app --host 0.0.0.0 --port 8000`);
                 }
                 throw error;
             }
         }
+        // Toggle menu visibility
+        function toggleMenu() {
+            const menu = document.getElementById('dropdownMenu');
+            menu.classList.toggle('open');
+        }
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            const menu = document.getElementById('dropdownMenu');
+            const menuBtn = document.querySelector('.menu-button');
+            if (!menu.contains(e.target) && !menuBtn.contains(e.target)) {
+                menu.classList.remove('open');
+            }
+        });
+
         // Initialize the page
         document.addEventListener('DOMContentLoaded', () => {
             console.log('Using API URL:', API_URL);
@@ -675,6 +791,9 @@
             messages = [];
             renderMessages();
             updateChatTitle();
+            // Close menu after action
+            const menu = document.getElementById('dropdownMenu');
+            menu.classList.remove('open');
         }
 
         // Update chat title
@@ -788,20 +907,24 @@
             showTypingIndicator();
 
             try {
-                const useRag = document.getElementById('useRag').checked;
-                const model = document.getElementById('modelSelect').value;
+                const useRagToggle = document.getElementById('useRag');
+                const modelSelect = document.getElementById('modelSelect');
+                const payload = {
+                    query: userMessage,
+                    conversation_id: currentConversation,
+                    use_rag: useRagToggle ? useRagToggle.checked : true
+                };
+
+                if (modelSelect && modelSelect.value) {
+                    payload.model = modelSelect.value;
+                }
 
                 const response = await apiFetch('/query', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        query: userMessage,
-                        conversation_id: currentConversation,
-                        use_rag: useRag,
-                        model: model
-                    }),
+                    body: JSON.stringify(payload),
                 });
 
                 const data = await response.json();
@@ -867,7 +990,7 @@
                 typingDiv.remove();
             }
         }
-        // Handle file upload (async with polling)
+        // Handle file upload using the backend's synchronous /upload response
         async function handleFileUpload(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -900,23 +1023,9 @@
                     data: data
                 });
 
-                // If async (job_id returned), poll for completion
-                if (data.job_id) {
-                    statusElement.textContent = `Processing '${file.name}'...`;
-                    const result = await pollUploadStatus(data.job_id);
-                    if (result.status === 'completed') {
-                        const textChunks = result.text_chunks || 0;
-                        statusElement.textContent = `\u2705 ${result.filename || file.name} processed (${textChunks} text chunks)`;
-                    } else if (result.status === 'failed') {
-                        statusElement.textContent = `\u274c Error: ${result.error || 'Processing failed'}`;
-                        statusElement.style.color = '#ff6b6b';
-                    }
-                } else {
-                    // Legacy sync response fallback
-                    const successMessage = data.filename ? `'${data.filename}' uploaded` : 'Upload successful';
-                    const textChunks = typeof data.chunks === 'number' ? data.chunks : 0;
-                    statusElement.textContent = `\u2705 ${successMessage} (${textChunks} text chunks)`;
-                }
+                const successMessage = data.filename ? `'${data.filename}' uploaded` : 'Upload successful';
+                const textChunks = typeof data.chunks === 'number' ? data.chunks : 0;
+                statusElement.textContent = `\u2705 ${successMessage} (${textChunks} text chunks)`;
 
                 setTimeout(() => {
                     statusElement.textContent = '';
@@ -935,26 +1044,6 @@
 
             event.target.value = '';
         }
-
-        async function pollUploadStatus(jobId, maxWaitMs = 300000) {
-            const interval = 1500;
-            const start = Date.now();
-            while (Date.now() - start < maxWaitMs) {
-                try {
-                    const resp = await apiFetch(`/upload/status/${jobId}`);
-                    const data = await resp.json();
-                    if (data.status === 'completed' || data.status === 'failed') {
-                        return data;
-                    }
-                } catch (e) {
-                    console.warn('Poll error:', e);
-                }
-                await new Promise(r => setTimeout(r, interval));
-            }
-            return { status: 'failed', error: 'Timed out waiting for processing' };
-        }
-
-
         // Enable enter to send
         document.getElementById('messageInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
