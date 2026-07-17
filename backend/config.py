@@ -86,3 +86,41 @@ RAG_KEYWORD_TOP_K = int(os.getenv("RAG_KEYWORD_TOP_K", "8"))
 # Chunking settings used when new documents are uploaded and indexed.
 RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "250"))
 RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "50"))
+
+# ---------------------------------------------------------------------------
+# Multimodal RAG
+# ---------------------------------------------------------------------------
+
+# Master switch: set MULTIMODAL_ENABLED=true to activate image extraction,
+# VLM captioning, and vision-aware retrieval.
+MULTIMODAL_ENABLED = os.getenv("MULTIMODAL_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+# VLM used for image captioning and vision Q&A.
+# For Ollama: e.g. "llava", "llava:13b", "minicpm-v", "qwen2-vl"
+# For LM Studio: the model identifier loaded in LM Studio
+# Leave empty to fall back to text-only description.
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava").strip()
+LM_STUDIO_VISION_MODEL = os.getenv("LM_STUDIO_VISION_MODEL", "").strip()
+
+# Where extracted images are stored on disk (relative to backend directory).
+IMAGE_STORE_PATH = os.getenv("IMAGE_STORE_PATH", "image_store").strip()
+
+# Minimum pixel area (width × height) for an extracted PDF image to be kept.
+# Filters out tiny decorative icons/bullets.  Default: 100×100 = 10 000 px².
+IMAGE_MIN_AREA = int(os.getenv("IMAGE_MIN_AREA", "10000"))
+
+# JPEG quality (1-95) used when saving extracted PDF images.
+IMAGE_JPEG_QUALITY = int(os.getenv("IMAGE_JPEG_QUALITY", "85"))
+
+# Maximum long-edge (px) to which images are down-scaled before encoding for
+# the VLM API.  Keeps payloads small without sacrificing readability.
+IMAGE_MAX_EDGE = int(os.getenv("IMAGE_MAX_EDGE", "1024"))
+
+# How many images to extract per PDF page (0 = embedded raster images only,
+# any other value = also render the full page when no embedded images found).
+PDF_MAX_IMAGES_PER_PAGE = int(os.getenv("PDF_MAX_IMAGES_PER_PAGE", "5"))
+
+# Timeout (seconds) for VLM captioning calls (images may be large).
+VISION_TIMEOUT_SECONDS = int(os.getenv("VISION_TIMEOUT_SECONDS", "180"))

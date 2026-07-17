@@ -1,6 +1,7 @@
 import uuid
 import json
 import io
+import base64
 import time
 import logging
 import os
@@ -11,6 +12,12 @@ import requests
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from pathlib import Path
+
+try:
+    from PIL import Image as PILImage
+    _PIL_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _PIL_AVAILABLE = False
 
 import numpy as np
 import faiss
@@ -48,11 +55,219 @@ from config import (
     RAG_KEYWORD_TOP_K,
     RAG_CHUNK_SIZE,
     RAG_CHUNK_OVERLAP,
+    # Multimodal
+    MULTIMODAL_ENABLED,
+    OLLAMA_VISION_MODEL,
+    LM_STUDIO_VISION_MODEL,
+    IMAGE_STORE_PATH,
+    IMAGE_MIN_AREA,
+    IMAGE_JPEG_QUALITY,
+    IMAGE_MAX_EDGE,
+    PDF_MAX_IMAGES_PER_PAGE,
+    VISION_TIMEOUT_SECONDS,
 )
 from models.schemas import QueryRequest, ConversationResponse
 
 logger = logging.getLogger("rag_service")
- 
+
+# ---------------------------------------------------------------------------
+# Image store — persists extracted / uploaded images for multimodal retrieval
+# ---------------------------------------------------------------------------
+_IMAGE_STORE_DIR = Path(__file__).resolve().parent.parent / IMAGE_STORE_PATH
+if MULTIMODAL_ENABLED:
+    _IMAGE_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info("Image store directory: %s", _IMAGE_STORE_DIR)
+
+# Supported upload extensions including images
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
+
+
+# ---------------------------------------------------------------------------
+# Multimodal helpers
+# ---------------------------------------------------------------------------
+
+def _image_to_base64(image_path: Path) -> Optional[str]:
+    """Read an image from disk, optionally resize it, and return base64 string."""
+    if not _PIL_AVAILABLE:
+        logger.warning("Pillow not installed — cannot encode image to base64.")
+        return None
+    try:
+        with PILImage.open(image_path) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            # Resize so long-edge <= IMAGE_MAX_EDGE
+            max_edge = IMAGE_MAX_EDGE
+            if max(img.width, img.height) > max_edge:
+                scale = max_edge / max(img.width, img.height)
+                new_w = max(1, int(img.width * scale))
+                new_h = max(1, int(img.height * scale))
+                img = img.resize((new_w, new_h), PILImage.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=IMAGE_JPEG_QUALITY)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as exc:
+        logger.warning("Failed to encode image %s: %s", image_path, exc)
+        return None
+
+
+def _image_bytes_to_base64(image_bytes: bytes, fmt: str = "JPEG") -> Optional[str]:
+    """Encode raw image bytes to base64 (with optional resize)."""
+    if not _PIL_AVAILABLE:
+        return base64.b64encode(image_bytes).decode("utf-8")
+    try:
+        with PILImage.open(io.BytesIO(image_bytes)) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            max_edge = IMAGE_MAX_EDGE
+            if max(img.width, img.height) > max_edge:
+                scale = max_edge / max(img.width, img.height)
+                img = img.resize(
+                    (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                    PILImage.LANCZOS,
+                )
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=IMAGE_JPEG_QUALITY)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as exc:
+        logger.warning("Failed to encode image bytes: %s", exc)
+        return None
+
+
+def _ollama_vision_caption(image_b64: str, prompt: str = "") -> str:
+    """Ask the Ollama VLM to describe an image. Returns the caption string."""
+    model = OLLAMA_VISION_MODEL
+    if not model:
+        return ""
+    base_url = _ollama_base_url()
+    url = f"{base_url}/api/chat"
+    default_prompt = (
+        "Describe this image in detail. Focus on any text, charts, diagrams, tables, "
+        "or key visual information that would be useful for a fleet management system."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt or default_prompt,
+                "images": [image_b64],
+            }
+        ],
+        "stream": False,
+        "options": {"temperature": 0.1, "num_predict": 512},
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=VISION_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+        content = _strip_think_tags(data.get("message", {}).get("content") or "")
+        return content.strip()
+    except Exception as exc:
+        logger.warning("Ollama VLM caption failed: %s", exc)
+        return ""
+
+
+def _lmstudio_vision_caption(image_b64: str, prompt: str = "") -> str:
+    """Ask the LM Studio VLM to describe an image."""
+    model = LM_STUDIO_VISION_MODEL
+    if not model:
+        return ""
+    url = f"{_lmstudio_v1_base_url()}/chat/completions"
+    default_prompt = (
+        "Describe this image in detail. Focus on any text, charts, diagrams, tables, "
+        "or key visual information that would be useful for a fleet management system."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt or default_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 512,
+    }
+    try:
+        resp = requests.post(url, headers=_lmstudio_headers(), json=payload, timeout=VISION_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        return (choices[0].get("message", {}).get("content") or "").strip()
+    except Exception as exc:
+        logger.warning("LM Studio VLM caption failed: %s", exc)
+        return ""
+
+
+def _caption_image(image_b64: str, prompt: str = "") -> str:
+    """Dispatch image captioning to the active inference provider's VLM."""
+    if INFERENCE_PROVIDER == "ollama":
+        return _ollama_vision_caption(image_b64, prompt)
+    if INFERENCE_PROVIDER == "lmstudio":
+        return _lmstudio_vision_caption(image_b64, prompt)
+    # Local provider: no built-in VLM support; return placeholder
+    logger.info("Local inference provider has no VLM — skipping image caption.")
+    return ""
+
+
+def _ollama_vision_chat(messages_with_images: List[dict], max_tokens: int = 1024, temperature: float = 0.3, model_override: Optional[str] = None) -> str:
+    """Ollama chat call that supports messages containing base64 images."""
+    model = model_override or OLLAMA_VISION_MODEL or OLLAMA_CHAT_MODEL
+    if not model:
+        raise HTTPException(status_code=500, detail="No vision/chat model configured for Ollama.")
+    base_url = _ollama_base_url()
+    url = f"{base_url}/api/chat"
+    payload = {
+        "model": model,
+        "messages": messages_with_images,
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=VISION_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+        content = _strip_think_tags(data.get("message", {}).get("content") or "")
+        if not content:
+            raise HTTPException(status_code=502, detail="Ollama VLM returned an empty response.")
+        return content
+    except requests.RequestException as exc:
+        logger.error("Ollama vision chat failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Ollama vision chat failed: {exc}") from exc
+
+
+def _lmstudio_vision_chat(messages_with_images: List[dict], max_tokens: int = 1024, temperature: float = 0.3, model_override: Optional[str] = None) -> str:
+    """LM Studio chat call that supports messages containing base64 images."""
+    model = model_override or LM_STUDIO_VISION_MODEL or LM_STUDIO_CHAT_MODEL
+    if not model:
+        raise HTTPException(status_code=500, detail="No vision/chat model configured for LM Studio.")
+    url = f"{_lmstudio_v1_base_url()}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": messages_with_images,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    try:
+        resp = requests.post(url, headers=_lmstudio_headers(), json=payload, timeout=VISION_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise HTTPException(status_code=502, detail="LM Studio VLM returned no choices.")
+        content = (choices[0].get("message", {}).get("content") or "").strip()
+        if not content:
+            raise HTTPException(status_code=502, detail="LM Studio VLM returned an empty response.")
+        return content
+    except requests.RequestException as exc:
+        logger.error("LM Studio vision chat failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"LM Studio vision chat failed: {exc}") from exc
+
 
 def _mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """Mean pool token embeddings using attention mask."""
@@ -82,7 +297,7 @@ def _strip_think_tags(text: str) -> str:
     return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
 
-def _ollama_chat(messages: List[dict], max_tokens: int = 320, temperature: float = 0.3, model_override: Optional[str] = None) -> str:
+def _ollama_chat(messages: List[dict], max_tokens: int = 1024, temperature: float = 0.3, model_override: Optional[str] = None) -> str:
     model = model_override or OLLAMA_CHAT_MODEL
     if not model:
         raise HTTPException(
@@ -219,7 +434,7 @@ def _lmstudio_headers() -> dict:
     }
 
 
-def _lmstudio_chat(messages: List[dict], max_tokens: int = 320, temperature: float = 0.3, model_override: Optional[str] = None) -> str:
+def _lmstudio_chat(messages: List[dict], max_tokens: int = 1024, temperature: float = 0.3, model_override: Optional[str] = None) -> str:
     model = model_override or LM_STUDIO_CHAT_MODEL
     if not model:
         raise HTTPException(
@@ -482,7 +697,11 @@ index = _load_index()
 
 MAX_EMBED_CHARS = 2000  # conservative char cap before tokenizer truncation
 TEXT_FILE_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".log", ".xml", ".html", ".htm"}
-SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".docx", *TEXT_FILE_EXTENSIONS}
+SUPPORTED_UPLOAD_EXTENSIONS = {
+    ".pdf", ".docx",
+    *TEXT_FILE_EXTENSIONS,
+    *(IMAGE_FILE_EXTENSIONS if MULTIMODAL_ENABLED else set()),
+}
 SEARCH_STOPWORDS = {
     "a",
     "an",
@@ -583,6 +802,17 @@ def _embed_texts(texts: List[str]) -> np.ndarray:
     return pooled.cpu().numpy().astype("float32")
 
 
+def _embed_text_batch(texts: List[str]) -> np.ndarray:
+    """Embed a batch using the configured embedding provider."""
+    if EMBEDDING_PROVIDER == "ollama":
+        return np.array([_ollama_embedding(text) for text in texts], dtype="float32")
+
+    if EMBEDDING_PROVIDER == "lmstudio":
+        return np.array([_lmstudio_embedding(text) for text in texts], dtype="float32")
+
+    return _embed_texts(texts)
+
+
 def _hash_embedding(text: str, dim: int) -> List[float]:
     """Deterministic offline embedding fallback when local models are unavailable."""
     values = np.zeros(dim, dtype="float32")
@@ -662,10 +892,10 @@ def add_documents(chunks: List[str], metadata: List[dict]):
         batch = truncated[i:i + BATCH_SIZE]
         batch_start = time.time()
         try:
-            arr = _embed_texts(batch)
+            arr = _embed_text_batch(batch)
         except Exception as e:
             logger.warning(
-                "Local embedding model unavailable during indexing (%s). "
+                "Embedding provider unavailable during indexing (%s). "
                 "Using deterministic offline hash embeddings.",
                 str(e),
             )
@@ -983,6 +1213,26 @@ async def handle_query(request: QueryRequest):
     messages = [{"role": "system", "content": system_prompt}]
     messages.append({"role": "user", "content": request.query})
 
+    # ------------------------------------------------------------------
+    # Collect images from retrieved chunks for multimodal answering
+    # ------------------------------------------------------------------
+    retrieved_images: List[str] = []  # base64 strings, de-duplicated
+    if MULTIMODAL_ENABLED and results:
+        seen_paths: set = set()
+        for result in results:
+            img_path_str = result.get("metadata", {}).get("image_path", "")
+            if img_path_str and img_path_str not in seen_paths:
+                seen_paths.add(img_path_str)
+                img_path = Path(img_path_str)
+                if img_path.exists():
+                    b64 = _image_to_base64(img_path)
+                    if b64:
+                        retrieved_images.append(b64)
+                if len(retrieved_images) >= 3:  # cap at 3 images per query
+                    break
+        if retrieved_images:
+            logger.info("Attaching %d image(s) to VLM query", len(retrieved_images))
+
     # Small local models respond better with concise prompts.
     if context:
         prompt = (
@@ -1000,16 +1250,48 @@ async def handle_query(request: QueryRequest):
 
     try:
         if INFERENCE_PROVIDER == "ollama":
-            # Run blocking HTTP call in a thread to avoid blocking the async event loop
-            answer = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: _ollama_chat(messages, max_tokens=320, temperature=0.3, model_override=request.model)
-            )
+            if retrieved_images:
+                # Build vision-enabled user message for Ollama
+                vision_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": request.query,
+                        "images": retrieved_images,
+                    },
+                ]
+                answer = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: _ollama_vision_chat(vision_messages, max_tokens=1024, temperature=0.3, model_override=request.model)
+                )
+            else:
+                # Run blocking HTTP call in a thread to avoid blocking the async event loop
+                answer = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: _ollama_chat(messages, max_tokens=1024, temperature=0.3, model_override=request.model)
+                )
         elif INFERENCE_PROVIDER == "lmstudio":
-            answer = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: _lmstudio_chat(messages, max_tokens=320, temperature=0.3, model_override=request.model)
-            )
+            if retrieved_images:
+                # Build vision-enabled user message for LM Studio (OpenAI format)
+                content_parts: List[dict] = [{"type": "text", "text": request.query}]
+                for b64 in retrieved_images:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    })
+                vision_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content_parts},
+                ]
+                answer = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: _lmstudio_vision_chat(vision_messages, max_tokens=1024, temperature=0.3, model_override=request.model)
+                )
+            else:
+                answer = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: _lmstudio_chat(messages, max_tokens=1024, temperature=0.3, model_override=request.model)
+                )
         else:
             def _run_local_inference():
                 encoded = chat_tokenizer(
@@ -1021,7 +1303,7 @@ async def handle_query(request: QueryRequest):
                 with torch.no_grad():
                     generated = chat_model.generate(
                         **encoded,
-                        max_new_tokens=320,
+                        max_new_tokens=1024,
                         temperature=0.3,
                         do_sample=True,
                         top_p=0.9,
@@ -1034,6 +1316,7 @@ async def handle_query(request: QueryRequest):
 
             answer = await asyncio.get_running_loop().run_in_executor(None, _run_local_inference)
         # DistilGPT2 / weak models may emit empty/generic output; return grounded snippets instead.
+
         if context and (
             not answer
             or len(answer) < 24
@@ -1061,26 +1344,188 @@ async def handle_query(request: QueryRequest):
     )
 
 
-def _extract_text_from_pdf(content: bytes) -> str:
-    """Extract readable text from a PDF using PyMuPDF."""
+def _extract_images_from_pdf(doc: "fitz.Document", filename: str) -> List[dict]:
+    """
+    Extract embedded raster images from every page of a PDF.
+    Falls back to rendering the full page when no embedded images are found
+    (handles scanned / image-heavy PDFs).
+
+    Returns a list of dicts: {page, image_path, b64}
+    """
+    if not MULTIMODAL_ENABLED:
+        return []
+
+    extracted: List[dict] = []
+    _IMAGE_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^\w\-]", "_", Path(filename).stem)[:60]
+
+    for page_num, page in enumerate(doc):
+        page_images: List[dict] = []
+
+        # 1) Try embedded images first
+        image_list = page.get_images(full=True)
+        saved_count = 0
+        for img_index, img_info in enumerate(image_list):
+            if saved_count >= PDF_MAX_IMAGES_PER_PAGE:
+                break
+            xref = img_info[0]
+            try:
+                base_image = doc.extract_image(xref)
+                img_bytes = base_image.get("image") or b""
+                if not img_bytes:
+                    continue
+
+                # Filter tiny images
+                if _PIL_AVAILABLE:
+                    try:
+                        with PILImage.open(io.BytesIO(img_bytes)) as pimg:
+                            if pimg.width * pimg.height < IMAGE_MIN_AREA:
+                                continue
+                    except Exception:
+                        pass
+
+                img_name = f"{stem}_p{page_num + 1}_img{img_index}.jpg"
+                img_path = _IMAGE_STORE_DIR / img_name
+                b64 = _image_bytes_to_base64(img_bytes)
+                if b64 is None:
+                    continue
+
+                # Save JPEG to disk
+                if _PIL_AVAILABLE:
+                    with PILImage.open(io.BytesIO(img_bytes)) as pimg:
+                        if pimg.mode not in ("RGB", "L"):
+                            pimg = pimg.convert("RGB")
+                        pimg.save(str(img_path), "JPEG", quality=IMAGE_JPEG_QUALITY)
+                else:
+                    img_path.write_bytes(img_bytes)
+
+                page_images.append({"page": page_num + 1, "image_path": str(img_path), "b64": b64})
+                saved_count += 1
+            except Exception as exc:
+                logger.debug("Skipped image xref %s on page %d: %s", xref, page_num + 1, exc)
+
+        # 2) If no embedded images found on this page, render the whole page
+        if not page_images:
+            try:
+                mat = fitz.Matrix(2.0, 2.0)  # 2× scale ≈ 144 dpi
+                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                img_bytes = pix.tobytes("jpeg")
+
+                if _PIL_AVAILABLE:
+                    with PILImage.open(io.BytesIO(img_bytes)) as pimg:
+                        if pimg.width * pimg.height < IMAGE_MIN_AREA:
+                            continue
+
+                img_name = f"{stem}_p{page_num + 1}_render.jpg"
+                img_path = _IMAGE_STORE_DIR / img_name
+                b64 = _image_bytes_to_base64(img_bytes)
+                if b64:
+                    img_path.write_bytes(img_bytes)
+                    page_images.append({"page": page_num + 1, "image_path": str(img_path), "b64": b64})
+            except Exception as exc:
+                logger.debug("Failed to render page %d: %s", page_num + 1, exc)
+
+        extracted.extend(page_images)
+
+    logger.info("Extracted %d images from PDF '%s'", len(extracted), filename)
+    return extracted
+
+
+def _extract_text_from_pdf(content: bytes, filename: str = "document.pdf") -> Tuple[str, List[dict]]:
+    """
+    Extract readable text from a PDF using PyMuPDF.
+
+    When MULTIMODAL_ENABLED, also extracts images and generates VLM captions.
+    Returns (text, image_records) where image_records is a list of dicts with
+    keys: page, image_path, caption.
+    """
     text_parts = []
+    image_records: List[dict] = []
     try:
         doc = fitz.open(stream=content, filetype="pdf")
         for page_num, page in enumerate(doc):
             page_text = page.get_text("text", sort=True)
             if page_text.strip():
                 text_parts.append(f"--- Page {page_num + 1} ---\n{page_text}")
+
+        if MULTIMODAL_ENABLED:
+            raw_images = _extract_images_from_pdf(doc, filename)
+            for img_info in raw_images:
+                b64 = img_info.get("b64", "")
+                caption = ""
+                if b64:
+                    logger.info("Captioning image on page %d of '%s'...", img_info["page"], filename)
+                    caption = _caption_image(b64)
+                image_records.append({
+                    "page": img_info["page"],
+                    "image_path": img_info["image_path"],
+                    "caption": caption,
+                })
+
         doc.close()
     except Exception as e:
         logger.error(f"Failed to extract text from PDF: {e}")
         raise ValueError(f"Could not extract text from PDF: {e}")
 
     full_text = "\n\n".join(text_parts)
-    if not full_text.strip():
-        raise ValueError("PDF appears to contain no extractable text (may be scanned/image-based).")
+    if not full_text.strip() and not image_records:
+        raise ValueError("PDF appears to contain no extractable text or images.")
+    if not full_text.strip() and image_records:
+        logger.info("PDF has no text layer — using image captions only for '%s'", filename)
+        # Build synthetic text from captions so chunking still works
+        caption_parts = []
+        for rec in image_records:
+            if rec.get("caption"):
+                caption_parts.append(f"--- Page {rec['page']} Image ---\n{rec['caption']}")
+        full_text = "\n\n".join(caption_parts)
 
-    logger.info(f"Extracted {len(full_text)} characters from PDF ({len(text_parts)} pages)")
-    return full_text
+    logger.info(
+        "Extracted %d characters from PDF (%d pages, %d images) for '%s'",
+        len(full_text), len(text_parts), len(image_records), filename,
+    )
+    return full_text, image_records
+
+
+def _extract_text_from_image_file(content: bytes, filename: str) -> Tuple[str, List[dict]]:
+    """
+    Handle a standalone image upload: caption it via VLM and store on disk.
+    Returns (caption_text, [image_record]).
+    """
+    if not MULTIMODAL_ENABLED:
+        raise ValueError(
+            "Image uploads are only supported when MULTIMODAL_ENABLED=true. "
+            "Enable it in your .env file."
+        )
+
+    b64 = _image_bytes_to_base64(content)
+    if b64 is None:
+        raise ValueError(f"Could not read image file '{filename}'. Ensure it is a valid image.")
+
+    logger.info("Captioning uploaded image '%s'...", filename)
+    caption = _caption_image(b64)
+    if not caption:
+        caption = f"[Image: {filename}] — No caption could be generated (VLM unavailable or not configured)."
+        logger.warning("No caption generated for image '%s'", filename)
+
+    # Persist image to image store
+    _IMAGE_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^\w\-]", "_", Path(filename).stem)[:60]
+    img_path = _IMAGE_STORE_DIR / f"{stem}_{uuid.uuid4().hex[:8]}.jpg"
+    b64_saved = _image_bytes_to_base64(content)  # resize before saving
+    if _PIL_AVAILABLE:
+        try:
+            with PILImage.open(io.BytesIO(content)) as pimg:
+                if pimg.mode not in ("RGB", "L"):
+                    pimg = pimg.convert("RGB")
+                pimg.save(str(img_path), "JPEG", quality=IMAGE_JPEG_QUALITY)
+        except Exception:
+            img_path.write_bytes(content)
+    else:
+        img_path.write_bytes(content)
+
+    image_record = {"page": 1, "image_path": str(img_path), "caption": caption}
+    return caption, [image_record]
+
 
 
 def _extract_text_from_docx(content: bytes) -> str:
@@ -1140,16 +1585,25 @@ def _decode_plain_text(content: bytes, filename: str) -> str:
     raise ValueError(f"{filename} does not contain readable text content.")
 
 
-def _extract_text_from_file(filename: str, content: bytes) -> str:
-    """Route file to the appropriate text extractor based on extension."""
+def _extract_text_from_file(filename: str, content: bytes) -> Tuple[str, List[dict]]:
+    """Route file to the appropriate extractor based on extension.
+
+    Returns (normalized_text, image_records) where image_records is a list
+    of dicts with keys: page, image_path, caption.
+    Image records are only populated for PDFs (when MULTIMODAL_ENABLED) and
+    standalone image file uploads.
+    """
     ext = os.path.splitext(filename)[1].lower()
+    image_records: List[dict] = []
 
     if ext == ".pdf":
-        extracted = _extract_text_from_pdf(content)
+        extracted, image_records = _extract_text_from_pdf(content, filename)
     elif ext in (".docx",):
         extracted = _extract_text_from_docx(content)
     elif ext in TEXT_FILE_EXTENSIONS:
         extracted = _decode_plain_text(content, filename)
+    elif ext in IMAGE_FILE_EXTENSIONS:
+        extracted, image_records = _extract_text_from_image_file(content, filename)
     else:
         allowed = ", ".join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))
         raise ValueError(
@@ -1159,27 +1613,25 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
 
     normalized = _normalize_extracted_text(extracted)
 
-    if not normalized:
-        raise ValueError(f"{filename} does not contain readable text.")
+    if not normalized and not image_records:
+        raise ValueError(f"{filename} does not contain readable text or images.")
 
-    return normalized
+    return normalized, image_records
 
 
 def upload_document(file):
-
     content = file.file.read()
     filename = file.filename or "unknown.txt"
 
     logger.info(f"Processing upload: {filename} ({len(content)} bytes)")
 
-    text = _extract_text_from_file(filename, content)
+    text, image_records = _extract_text_from_file(filename, content)
 
-    logger.info(f"Extracted text length: {len(text)} characters")
+    logger.info(f"Extracted text length: {len(text)} characters, images: {len(image_records)}")
 
-    all_chunks = split_text(text)
+    all_chunks = split_text(text) if text.strip() else []
 
     # Filter out garbage chunks (PDF xref tables, binary data, etc.)
-    # Keep only chunks where at least 40% of characters are alphabetic
     clean_chunks = []
     skipped = 0
     for chunk in all_chunks:
@@ -1192,22 +1644,63 @@ def upload_document(file):
     if skipped:
         logger.info(f"Filtered out {skipped} low-quality chunks (xref/binary data)")
 
-    if not clean_chunks:
+    # Build metadata: attach image_path to text chunks that share a page
+    # with an extracted image so the retrieval layer can load the image.
+    page_to_image: dict = {}
+    if MULTIMODAL_ENABLED and image_records:
+        for rec in image_records:
+            page = rec.get("page", 0)
+            if page not in page_to_image:
+                page_to_image[page] = rec.get("image_path", "")
+
+    metadata = []
+    for i, chunk in enumerate(clean_chunks):
+        meta = {"filename": filename, "chunk": i, "type": "text"}
+        if page_to_image:
+            # Rough page estimate from chunk position
+            approx_page = max(1, round((i / max(len(clean_chunks), 1)) * max(page_to_image.keys(), default=1)))
+            closest_page = min(page_to_image.keys(), key=lambda p: abs(p - approx_page), default=None)
+            if closest_page is not None:
+                meta["image_path"] = page_to_image[closest_page]
+        metadata.append(meta)
+
+    # Also index image captions as dedicated chunks with image_path metadata
+    caption_chunks = []
+    caption_metadata = []
+    if MULTIMODAL_ENABLED and image_records:
+        for rec in image_records:
+            caption = (rec.get("caption") or "").strip()
+            if caption:
+                caption_chunks.append(caption)
+                caption_metadata.append({
+                    "filename": filename,
+                    "chunk": len(clean_chunks) + len(caption_chunks) - 1,
+                    "type": "image_caption",
+                    "image_path": rec.get("image_path", ""),
+                    "page": rec.get("page", 0),
+                })
+
+    all_text_chunks = clean_chunks + caption_chunks
+    all_metadata = metadata + caption_metadata
+
+    if not all_text_chunks:
         raise ValueError(
-            f"{filename} does not contain enough readable text to index. "
-            "Upload a text-based PDF, DOCX, or plain-text file."
+            f"{filename} does not contain enough readable text or captionable images to index. "
+            "Upload a text-based PDF, DOCX, plain-text, or image file."
         )
 
-    metadata = [{"filename": filename, "chunk": i} for i, _ in enumerate(clean_chunks)]
-
-    add_documents(clean_chunks, metadata)
+    add_documents(all_text_chunks, all_metadata)
 
     return {
         "status": "uploaded",
         "chunks": len(clean_chunks),
+        "image_chunks": len(caption_chunks),
+        "images_extracted": len(image_records),
         "filename": filename,
-        "text_length": len(text)
+        "text_length": len(text),
+        "multimodal": MULTIMODAL_ENABLED,
     }
+
 
 
 def clear_index():
